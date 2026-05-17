@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link href="./style.css" rel="stylesheet">
+    <title>Yuri</title>
+    <script src="./vue.global.js"></script>
+    <script src="./wasm_exec.js"></script>
+</head>
+
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4 md:p-8 font-sans text-gray-800">
+
+    <div id="app" class="w-full max-w-2xl bg-white rounded-2xl shadow-xl overflow-hidden transition-all">
+        <div class="bg-gradient-to-r from-blue-500 to-indigo-600 p-6 text-white text-center">
+            <h2 class="text-xl md:text-2xl font-bold tracking-wider">✨Yuri </h2>
+            <p class="text-blue-100 text-sm mt-1">支持超大文件流式解密 · 硬件加速</p>
+        </div>
+
+        <div class="p-6 md:p-8">
+            <div v-if="!isSupported" class="mb-4 p-4 bg-red-50 text-red-600 rounded-lg text-sm border border-red-200">
+                ⚠️ 您的浏览器不支持 File System Access API 或 Web Crypto API，无法处理超大文件。请使用最新版 Chrome 或 Edge。
+            </div>
+
+            <div v-if="!currentManifest && !needsPassword && !showProgress" @dragover.prevent="isDragging = true"
+                @dragleave.prevent="isDragging = false" @drop.prevent="handleDrop" @click="triggerFileInput" :class="[
+                    'relative border-2 border-dashed rounded-xl p-8 md:p-12 text-center cursor-pointer transition-all duration-300',
+                    isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100 hover:border-blue-400',
+                    !wasmLoaded ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''
+                ]">
+                <input type="file" ref="fileInputRef" class="hidden" @change="handleFileSelect" accept=".mp4" />
+                <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <p class="text-lg font-medium text-gray-700">
+                    {{ isDragging ? '松开鼠标识别文件' : '点击选择 或 拖拽 .mp4 文件' }}
+                </p>
+                <p class="text-sm text-gray-500 mt-2">
+                    {{ wasmLoaded ? '识别成功后请选择保存位置' : '正在初始化还原引擎...' }}
+                </p>
+            </div>
+
+            <div v-if="needsPassword && !showProgress"
+                class="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center animate-fade-in">
+                <div class="inline-flex items-center justify-center w-12 h-12 bg-amber-100 rounded-full mb-4">
+                    <svg class="w-6 h-6 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                </div>
+                <h3 class="text-amber-900 font-bold text-lg mb-4">请输入该文件的解密密码：</h3>
+                <div class="max-w-xs mx-auto space-y-3">
+                    <input type="password" v-model="inputPassword" @keyup.enter="handlePasswordSubmit"
+                        placeholder="输入密码..."
+                        class="w-full px-4 py-2 border border-amber-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none transition-all text-center" />
+                    <button @click="handlePasswordSubmit"
+                        class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-all active:scale-95">
+                        确认
+                    </button>
+                    <button @click="reset" class="text-xs text-amber-600 underline">取消并返回</button>
+                </div>
+            </div>
+
+            <div v-if="currentManifest && !showProgress"
+                class="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center animate-fade-in">
+                <div class="inline-flex items-center justify-center w-12 h-12 bg-blue-100 rounded-full mb-4">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+                <h3 class="text-blue-900 font-bold text-lg mb-1">文件就绪</h3>
+                <p class="text-blue-700 text-sm mb-6 break-all px-4">
+                    {{ currentManifest.file_name }} ({{ formatBytes(currentManifest.total_size) }})
+                </p>
+                <div class="max-w-xs mx-auto space-y-4">
+                    <button @click="startDecryption"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-xl shadow-lg transition-all active:scale-95 text-lg">
+                        ✨ 开始还原
+                    </button>
+                    <button @click="reset" class="text-sm text-gray-400 hover:text-gray-600 transition-colors">
+                        放弃并返回
+                    </button>
+                </div>
+            </div>
+
+            <div v-if="showProgress" class="mt-6 p-5 bg-gray-50 rounded-xl border border-gray-100 animate-fade-in">
+                <div class="flex justify-between text-sm font-medium text-gray-700 mb-2">
+                    <span>还原进度</span>
+                    <span>{{ progressPercent }}%</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                    <div class="bg-blue-500 h-3 rounded-full transition-all duration-300 ease-out"
+                        :style="{ width: progressPercent + '%' }">
+                    </div>
+                </div>
+                <p class="text-center text-sm font-mono text-gray-500 mt-3">{{ progressText }}</p>
+            </div>
+
+            <div class="mt-6">
+                <h3 class="text-sm font-semibold text-gray-600 mb-2">运行日志</h3>
+                <div ref="logContainer"
+                    class="bg-gray-900 text-green-400 font-mono text-xs md:text-sm p-4 rounded-xl h-48 overflow-y-auto custom-scrollbar leading-relaxed shadow-inner">
+                    <div v-for="(logItem, index) in logs" :key="index" class="mb-1 opacity-90 tracking-tight">
+                        <span class="text-gray-500 mr-2">[{{ logItem.time }}]</span> {{ logItem.msg }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, nextTick, computed } = Vue;
+
+        createApp({
+            setup() {
+                const wasmLoaded = ref(false);
+                const isDragging = ref(false);
+                const logs = ref([]);
+                const logContainer = ref(null);
+                const fileInputRef = ref(null);
+
+                const currentFile = ref(null);
+                const currentManifest = ref(null);
+                const needsPassword = ref(false);
+                const inputPassword = ref("");
+
+                const showProgress = ref(false);
+                const progressValue = ref(0);
+                const progressMax = ref(100);
+                const progressText = ref('准备就绪...');
+
+                const isSupported = ('showSaveFilePicker' in window) && !!(window.crypto && window.crypto.subtle) && ('TransformStream' in window);
+                const MANIFEST_UUID = new Uint8Array([0x4c, 0x6f, 0x6c, 0x69, 0x4d, 0x61, 0x6e, 0x69, 0x66, 0x65, 0x73, 0x74, 0x5f, 0x54, 0x30, 0x31]);
+
+                const formatBytes = (bytes, decimals = 2) => {
+                    if (bytes === 0) return '0 Bytes';
+                    const k = 1024;
+                    const dm = decimals < 0 ? 0 : decimals;
+                    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+                };
+
+                const progressPercent = computed(() => {
+                    if (progressMax.value === 0) return 0;
+                    return ((progressValue.value / progressMax.value) * 100).toFixed(1);
+                });
+
+                const log = (msg) => {
+                    const timeStr = new Date().toLocaleTimeString([], { hour12: false });
+                    logs.value.push({ time: timeStr, msg: msg });
+                    nextTick(() => {
+                        if (logContainer.value) {
+                            logContainer.value.scrollTop = logContainer.value.scrollHeight;
+                        }
+                    });
+                };
+
+                const reset = () => {
+                    currentFile.value = null;
+                    currentManifest.value = null;
+                    needsPassword.value = false;
+                    inputPassword.value = "";
+                    showProgress.value = false;
+                    progressValue.value = 0;
+                };
+
+                onMounted(() => {
+                    const go = new Go();
+                    log("⌛ 正在初始化安全引擎...");
+                    WebAssembly.instantiateStreaming(fetch("decryptor.wasm"), go.importObject).then((res) => {
+                        go.run(res.instance);
+                        wasmLoaded.value = true;
+                        log("✅ 环境检测完成 (Wasm)");
+                    }).catch(err => {
+                        log("❌ 初始化失败: " + err.message);
+                    });
+                });
+
+                const base64ToUint8 = (b64) => {
+                    const bin = atob(b64);
+                    return Uint8Array.from(bin, c => c.charCodeAt(0));
+                };
+
+                const findAndParseManifest = async (file, password) => {
+                    const fileSize = file.size;
+                    if (fileSize < 36) throw new Error("NOT_YURI_FILE:文件长度异常");
+
+                    log("🔍 正在定位隐藏数据...");
+
+                    const last4Buffer = await file.slice(fileSize - 4).arrayBuffer();
+                    const boxSize = new DataView(last4Buffer).getUint32(0);
+
+                    if (boxSize < 24 || (boxSize + 12) > fileSize) {
+                        throw new Error("NOT_YURI_FILE:指针索引越界");
+                    }
+
+                    const startPos = fileSize - 12 - boxSize;
+                    const headerBuffer = await file.slice(startPos, startPos + 24).arrayBuffer();
+                    const headerView = new Uint8Array(headerBuffer);
+
+                    const uuidMatch = MANIFEST_UUID.every((val, idx) => headerView[8 + idx] === val);
+                    if (!uuidMatch) {
+                        throw new Error("NOT_YURI_FILE:UUID校验失败");
+                    }
+
+                    const payloadSize = boxSize - 24;
+                    const payloadBuffer = await file.slice(startPos + 24, startPos + boxSize).arrayBuffer();
+                    const encryptedManifest = new Uint8Array(payloadBuffer);
+
+                    log("📡 已提取元数据，准备解密...");
+
+                    let masterKey = password ? password : (typeof getDefaultPassword === 'function' ? getDefaultPassword() : "");
+                    let decryptedBytes = wasmDecrypt(encryptedManifest, masterKey);
+
+                    if (decryptedBytes.error) {
+                        throw new Error(`DECRYPT_FAIL:${decryptedBytes.error}`);
+                    }
+
+                    log("✅ 数据清单解密成功");
+                    let jsonStr = new TextDecoder().decode(decryptedBytes);
+                    return JSON.parse(jsonStr);
+                };
+
+                const triggerFileInput = () => {
+                    if (wasmLoaded.value && !showProgress.value) {
+                        fileInputRef.value.click();
+                    }
+                };
+
+                const handleFileSelect = (e) => {
+                    const file = e.target.files[0];
+                    if (file) prepareFile(file);
+                    e.target.value = null;
+                };
+
+                const handleDrop = (e) => {
+                    isDragging.value = false;
+                    if (!wasmLoaded.value || showProgress.value) return;
+                    const file = e.dataTransfer.files[0];
+                    if (file) prepareFile(file);
+                };
+
+                const prepareFile = async (file, password = null) => {
+                    if (!file.name.toLowerCase().endsWith('.mp4')) {
+                        log("⚠️ 仅支持 .mp4 格式文件");
+                        return;
+                    }
+
+                    try {
+                        const manifest = await findAndParseManifest(file, password);
+                        currentFile.value = file;
+                        currentManifest.value = manifest;
+                        needsPassword.value = false;
+                        log("📦 识别到文件: " + manifest.file_name);
+                    } catch (err) {
+                        if (err.message.startsWith("NOT_YURI_FILE")) {
+                            const reason = err.message.split(":")[1] || "未知原因";
+                            log(`❌ 未检测到隐藏文件`);
+                        } else if (err.message.startsWith("DECRYPT_FAIL")) {
+                            log("⚠️ 需要输入正确的解密密码");
+                            needsPassword.value = true;
+                            currentFile.value = file;
+                        } else {
+                            log("❌ 未知错误: " + err.message);
+                            reset();
+                        }
+                    }
+                };
+
+                const handlePasswordSubmit = () => {
+                    if (!inputPassword.value) {
+                        log("⚠️ 密码不能为空");
+                        return;
+                    }
+                    prepareFile(currentFile.value, inputPassword.value);
+                };
+
+                const startDecryption = async () => {
+                    if (!isSupported) return;
+                    try {
+                        const manifest = currentManifest.value;
+                        const file = currentFile.value;
+                        const totalChunks = manifest.chunks.length;
+
+                        const fileHandle = await window.showSaveFilePicker({
+                            suggestedName: manifest.file_name,
+                            types: [{
+                                description: 'Extracted Archive',
+                                accept: { 'application/x-tar': ['.tar'] },
+                            }],
+                        });
+
+                        showProgress.value = true;
+                        progressMax.value = totalChunks;
+                        const updateUIInterval = Math.ceil(totalChunks / 100);
+
+                        log("🚀 启动流式处理模式...");
+
+                        const writableStream = await fileHandle.createWritable();
+                        const dataKey = base64ToUint8(manifest.data_key);
+                        const cryptoKey = await window.crypto.subtle.importKey(
+                            "raw", dataKey, { name: "AES-CTR" }, false, ["decrypt"]
+                        );
+
+                        const chunkReaderStream = new ReadableStream({
+                            start(controller) {
+                                this.index = 0;
+                            },
+                            async pull(controller) {
+                                if (this.index >= totalChunks) {
+                                    controller.close();
+                                    return;
+                                }
+                                const chunkMeta = manifest.chunks[this.index];
+                                try {
+                                    const sliceBuffer = await file.slice(chunkMeta.o, chunkMeta.o + chunkMeta.s).arrayBuffer();
+                                    controller.enqueue({ meta: chunkMeta, data: sliceBuffer, index: this.index });
+                                    this.index++;
+                                } catch (err) {
+                                    controller.error(new Error(`数据读取中断 (位置:${this.index}): ${err.message}`));
+                                }
+                            }
+                        }, { highWaterMark: 3 });
+
+                        const decryptValidateStream = new TransformStream({
+                            async transform(chunkObj, controller) {
+                                const { meta, data, index } = chunkObj;
+                                const nonce = base64ToUint8(meta.n);
+
+                                try {
+                                    const decryptedBuffer = await window.crypto.subtle.decrypt(
+                                        { name: "AES-CTR", counter: nonce, length: 128 },
+                                        cryptoKey,
+                                        data
+                                    );
+                                    const decryptedView = new Uint8Array(decryptedBuffer);
+
+                                    if (typeof wasmValidateBlake3 === 'function' && meta.h) {
+                                        const isValid = wasmValidateBlake3(decryptedView, meta.h);
+                                        if (!isValid) {
+                                            controller.error(new Error(`校验未通过：数据损坏或被篡改 (分块索引: ${index})`));
+                                            return;
+                                        }
+                                    }
+
+                                    controller.enqueue(decryptedView);
+
+                                    if (index % updateUIInterval === 0 || index === totalChunks - 1) {
+                                        progressValue.value = index + 1;
+                                        progressText.value = `正在提取文件: ${(((index + 1) / totalChunks) * 100).toFixed(1)}%`;
+                                    }
+                                } catch (err) {
+                                    controller.error(new Error(`分块 ${index} 处理失败: ${err.message}`));
+                                }
+                            }
+                        }, { highWaterMark: 3 });
+
+                        log("⚡ 开启硬件加速写入...");
+
+                        let isPipeSuccess = false;
+                        try {
+                            await chunkReaderStream
+                                .pipeThrough(decryptValidateStream)
+                                .pipeTo(writableStream, { preventAbort: true });
+
+                            isPipeSuccess = true;
+                        } catch (pipeErr) {
+                            log("⚠️ 校验失败: " + pipeErr.message);
+                            log("💾 正在保存已提取的有效部分......");
+                            try {
+                                await writableStream.close();
+                                log("✅ 写入完成！已保留损坏前的完整片段。");
+                            } catch (closeErr) {
+                                log("❌ 数据写入失败: " + closeErr.message);
+                            }
+                            progressText.value = "⚠️ 提取中断（已保存可用部分）";
+                            return;
+                        }
+
+                        if (isPipeSuccess) {
+                            progressText.value = "✨ 还原成功！";
+                            log("✨ 文件还原成功，已保存至本地");
+
+                            setTimeout(() => {
+                                if (progressText.value === "✨ 还原成功！") reset();
+                            }, 3000);
+                        }
+
+                    } catch (err) {
+                        log("❌ 提取异常中止: " + err.message);
+                        showProgress.value = false;
+                    }
+                };
+
+                return {
+                    wasmLoaded, isDragging, logs, logContainer, fileInputRef,
+                    isSupported, currentManifest, showProgress, progressValue,
+                    progressMax, progressText, progressPercent, formatBytes,
+                    needsPassword, inputPassword,
+                    triggerFileInput, handleFileSelect, handleDrop, handlePasswordSubmit,
+                    startDecryption, reset
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+
+</html>
